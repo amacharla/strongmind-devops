@@ -7,15 +7,19 @@ This repository contains deliverables for the StrongMind Staff DevOps Engineer t
 1. **Identity Server Migration** (Azure → AWS) — Architecture planning, database migration, traffic cutover, and risk management for a critical authentication service.
 2. **Rails CI/CD Standardization** — A production-grade GitHub Actions pipeline and Dockerfile for standardized deployment of Rails services to ECS Fargate.
 
+**AI assistants (Cursor, Claude Code, Codex, etc.):** See [`AGENTS.md`](AGENTS.md). It summarizes repo purpose, where each deliverable lives, fixed assumptions (workflow, Dockerfile), and safe-edit conventions so tools can onboard quickly and stay aligned with the exercise.
+
 ## Repository Structure
 
 ```
 .
 ├── README.md                              ← You are here
+├── AGENTS.md                              ← Context for AI coding agents (file map, assumptions, conventions)
 ├── ADR.md                                 ← Part 1: Identity Server Migration ADR (35 pts)
 ├── .github/workflows/rails-deploy.yml     ← Part 2: GitHub Actions CI/CD Pipeline (35 pts)
 ├── Dockerfile                             ← Part 3: Multi-stage Rails Dockerfile (15 pts)
 ├── OBSERVABILITY.md                       ← Part 4: Observability Design Plan (15 pts)
+├── Makefile                               ← Local Docker / Postgres / test shortcuts (`make help`)
 └── StrongMind_DevOps_Exercise.pdf         ← Exercise prompt (reference)
 ```
 
