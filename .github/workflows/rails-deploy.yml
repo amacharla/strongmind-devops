@@ -1,0 +1,337 @@
+name: Rails CI/CD — Build, Test, Deploy to ECS
+
+on:
+  push:
+    branches:
+      - main
+      - '**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (production or staging)'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: strongmind-production
+  ECS_SERVICE: rails-app
+  TASK_DEFINITION_FAMILY: rails-app
+  RUBY_VERSION: '3.3'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # CI: Test and security scan on every push
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test & Security Scan
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rails_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rails_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U rails_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      RAILS_ENV: test
+      DATABASE_URL: postgres://rails_test:postgres@localhost:5432/rails_test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby ${{ env.RUBY_VERSION }}
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+
+      - name: Prepare database
+        run: bin/rails db:schema:load
+
+      - name: Run RSpec tests
+        run: bundle exec rspec --format documentation --format RspecJunitFormatter --out tmp/rspec_results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rspec-results
+          path: tmp/rspec_results.xml
+          retention-days: 7
+
+      - name: Run Brakeman security scan
+        run: |
+          bundle exec brakeman --no-pager --format json --output tmp/brakeman_results.json || true
+
+          HIGH_COUNT=$(jq '.warnings | map(select(.confidence == "High")) | length' tmp/brakeman_results.json)
+          if [ "$HIGH_COUNT" -gt 0 ]; then
+            echo "::error::Brakeman found $HIGH_COUNT high-confidence security warnings"
+            jq '.warnings[] | select(.confidence == "High")' tmp/brakeman_results.json
+            exit 1
+          fi
+
+          echo "Brakeman scan passed (0 high-confidence warnings)"
+
+      - name: Upload Brakeman results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: brakeman-results
+          path: tmp/brakeman_results.json
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Build: Docker image on every push (verifies Dockerfile builds)
+  # Push to ECR only on main or workflow_dispatch
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.push.outputs.image_uri }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (all branches)
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --file Dockerfile \
+            --load \
+            --tag rails-app:ci-${{ github.sha }} \
+            .
+
+      - name: Configure AWS credentials (OIDC)
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push multi-platform image to ECR
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        id: push
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          FULL_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}"
+
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --tag "${FULL_IMAGE}:${IMAGE_TAG}" \
+            --tag "${FULL_IMAGE}:latest" \
+            --push \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --file Dockerfile \
+            .
+
+          echo "image_uri=${FULL_IMAGE}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Deploy: Update ECS task definition and service (main/dispatch only)
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to ECS
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.inputs.environment || 'production' }}
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Fetch current task definition
+        id: current-task-def
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.TASK_DEFINITION_FAMILY }} \
+            --query 'taskDefinition' \
+            --output json > current-task-def.json
+
+          CURRENT_REVISION=$(jq -r '.revision' current-task-def.json)
+          echo "current_revision=${CURRENT_REVISION}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Current task definition revision: ${CURRENT_REVISION}"
+
+      - name: Update task definition with new image
+        env:
+          NEW_IMAGE: ${{ needs.build.outputs.image_uri }}
+        run: |
+          jq --arg IMAGE "$NEW_IMAGE" \
+            '.containerDefinitions[0].image = $IMAGE |
+             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            current-task-def.json > new-task-def.json
+
+      - name: Register new task definition
+        id: register-task-def
+        run: |
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          NEW_REVISION=$(echo "$NEW_ARN" | grep -oE '[0-9]+$')
+          echo "task_def_arn=${NEW_ARN}" >> "$GITHUB_OUTPUT"
+          echo "new_revision=${NEW_REVISION}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Registered new task definition: ${NEW_ARN}"
+
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --task-definition ${{ steps.register-task-def.outputs.task_def_arn }} \
+            --force-new-deployment \
+            --output json > /dev/null
+
+          echo "::notice::ECS service update initiated"
+
+      - name: Wait for service stability
+        id: wait-stable
+        continue-on-error: true
+        run: |
+          echo "Waiting for ECS service to stabilize (timeout: 10 minutes)..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} &
+          WAIT_PID=$!
+
+          TIMEOUT=600
+          ELAPSED=0
+          INTERVAL=30
+
+          while kill -0 $WAIT_PID 2>/dev/null; do
+            if [ $ELAPSED -ge $TIMEOUT ]; then
+              echo "::error::Service did not stabilize within ${TIMEOUT}s"
+              kill $WAIT_PID 2>/dev/null || true
+              exit 1
+            fi
+
+            DEPLOYMENT_STATUS=$(aws ecs describe-services \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --services ${{ env.ECS_SERVICE }} \
+              --query 'services[0].deployments' \
+              --output json)
+
+            RUNNING=$(echo "$DEPLOYMENT_STATUS" | jq '[.[] | select(.status == "PRIMARY")] | .[0].runningCount')
+            DESIRED=$(echo "$DEPLOYMENT_STATUS" | jq '[.[] | select(.status == "PRIMARY")] | .[0].desiredCount')
+            echo "Progress: ${RUNNING}/${DESIRED} tasks running (${ELAPSED}s elapsed)"
+
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          wait $WAIT_PID
+          echo "::notice::Service stabilized successfully"
+
+      - name: Rollback on failure
+        if: steps.wait-stable.outcome == 'failure'
+        env:
+          PREVIOUS_REVISION: ${{ steps.current-task-def.outputs.current_revision }}
+        run: |
+          echo "::error::Deployment failed — rolling back to revision ${PREVIOUS_REVISION}"
+
+          ROLLBACK_ARN="arn:aws:ecs:${{ env.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:task-definition/${{ env.TASK_DEFINITION_FAMILY }}:${PREVIOUS_REVISION}"
+
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --task-definition "${ROLLBACK_ARN}" \
+            --force-new-deployment \
+            --output json > /dev/null
+
+          echo "Waiting for rollback to stabilize..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }}
+
+          echo "::notice::Rollback to revision ${PREVIOUS_REVISION} completed"
+
+      - name: Notify on failure
+        if: steps.wait-stable.outcome == 'failure'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -1)
+          PAYLOAD=$(jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "${{ github.ref_name }}" \
+            --arg sha "${{ github.sha }}" \
+            --arg msg "$COMMIT_MSG" \
+            --arg actor "${{ github.actor }}" \
+            --arg url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '{
+              channel: "#deployments",
+              username: "Deploy Bot",
+              text: "DEPLOYMENT FAILED & ROLLED BACK\n*Repo:* \($repo)\n*Branch:* \($branch)\n*Commit:* `\($sha)`\n*Message:* \($msg)\n*Actor:* \($actor)\n*Workflow:* \($url)"
+            }')
+
+          if [ -n "$SLACK_WEBHOOK" ]; then
+            curl -s -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK"
+          else
+            echo "::warning::SLACK_WEBHOOK_URL not configured — skipping notification"
+          fi
+
+          exit 1
+
+      - name: Notify on success
+        if: steps.wait-stable.outcome == 'success'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -1)
+          PAYLOAD=$(jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "${{ github.ref_name }}" \
+            --arg sha "${{ github.sha }}" \
+            --arg msg "$COMMIT_MSG" \
+            --arg rev "${{ steps.register-task-def.outputs.new_revision }}" \
+            '{
+              channel: "#deployments",
+              username: "Deploy Bot",
+              text: "Deployment successful\n*Repo:* \($repo)\n*Branch:* \($branch)\n*Commit:* `\($sha)`\n*Message:* \($msg)\n*Revision:* \($rev)"
+            }')
+
+          if [ -n "$SLACK_WEBHOOK" ]; then
+            curl -s -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK"
+          fi
