@@ -122,7 +122,7 @@ ECS Task (awslogs driver) ──► CloudWatch Logs ──► CloudWatch Insight
 | `/ecs/xray-daemon` | X-Ray sidecar containers | 7 days | Daemon health (low volume) |
 | `/aws/rds/identity-server` | RDS SQL Server logs | 14 days | Slow queries, error logs |
 
-All log groups beyond 30 days are archived to S3 (Glacier Instant Retrieval) for FERPA-compliant 7-year retention.
+All log groups beyond 30 days are archived to S3 (Glacier Instant Retrieval) for long-term retention. FERPA does not mandate a specific retention period, but StrongMind should retain audit logs for a minimum of **3 years** (aligned with FERPA complaint investigation windows) and student-related access logs for the duration of the student's enrollment plus 5 years. S3 Lifecycle rules enforce transitions from Standard → Glacier Instant Retrieval at 90 days.
 
 ### Structured Logging
 
@@ -142,6 +142,17 @@ Both applications should emit **JSON-structured logs** to stdout. The ECS `awslo
   "user_id": "usr_12345"
 }
 ```
+
+### PII Handling (FERPA)
+
+The Identity Server processes student records protected by FERPA. Application logs **must not** contain:
+- Student names, email addresses, or other directly identifiable information
+- Raw authentication credentials or tokens
+- Full database query results containing student records
+
+Use opaque identifiers (`user_id: "usr_12345"`) in logs rather than PII. If debugging requires PII correlation, use a separate lookup against the database with access gated by IAM and audited via CloudTrail.
+
+Additionally, enable **AWS CloudTrail** for API-level audit logging across all services. CloudTrail records who accessed Secrets Manager, RDS, and S3 — providing the access audit trail required by FERPA.
 
 ### Useful CloudWatch Insights Queries
 

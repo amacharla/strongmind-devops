@@ -128,7 +128,8 @@ We chose lift-and-containerize over a full re-architecture because:
 | **Instance Class**         | `db.r6i.large` (2 vCPU, 16 GB RAM) |
 | **Storage**                | 100 GB gp3 (3,000 IOPS baseline, burstable) |
 | **Multi-AZ**               | Yes (synchronous standby)          |
-| **Encryption**             | AWS KMS (customer-managed key)     |
+| **Encryption**             | AWS KMS (customer-managed key) — required for FERPA (student PII at rest) |
+| **Audit Logging**          | SQL Server Audit enabled; events shipped to S3 via RDS audit log publishing |
 | **Backup Retention**       | 14 days, automated daily snapshots |
 | **Maintenance Window**     | Sunday 04:00–05:00 UTC (Sat 9–10 PM MT, low traffic) |
 | **Parameter Group**        | Custom: `max_server_memory = 12288 MB`, `cost_threshold_for_parallelism = 25` |
@@ -159,6 +160,7 @@ Secrets are referenced in the ECS task definition via `secrets` block (ARN refer
 | **Data Subnets**   | `10.0.20.0/24`, `10.0.21.0/24` — RDS                 |
 | **NAT Gateway**    | One per AZ for outbound internet (ECR pull, external APIs) |
 | **VPC Endpoints**  | ECR (dkr + api), CloudWatch Logs, Secrets Manager, S3 — to reduce NAT costs and improve latency |
+| **VPC Flow Logs**  | Enabled on all subnets, published to CloudWatch Logs (FERPA audit trail for network access) |
 
 ### IAM Roles (Least Privilege)
 
@@ -265,7 +267,7 @@ We will use **AWS Database Migration Service (DMS)** with **full-load + CDC** to
 
 #### Phase 2: Full Load + CDC
 1. **Provision DMS replication instance** (`dms.r6i.large`) in the same VPC as the target RDS.
-2. **Create source endpoint** pointing to Azure SQL Database (via VPN or public endpoint with TLS + IP whitelisting).
+2. **Create source endpoint** pointing to Azure SQL Database (via VPN or public endpoint with TLS + IP whitelisting). DMS connections must use TLS encryption — the identity database contains student PII subject to FERPA.
 3. **Create target endpoint** pointing to RDS SQL Server.
 4. **Enable CDC on Azure SQL** — requires `ALTER DATABASE SET CHANGE_TRACKING = ON` and enabling for each tracked table.
 5. **Start DMS task** with `full-load-and-cdc` mode:
@@ -307,6 +309,7 @@ We will use **AWS Database Migration Service (DMS)** with **full-load + CDC** to
 | 3 | **Token-signing certificate rotation fails during migration** — If the signing certificate is rotated while both environments are active, JWT validation could break for one environment. | Low | Critical | Freeze certificate rotation during the migration window. Migrate the certificate to Secrets Manager before Phase 1. Both environments must use the same certificate. After migration, configure automatic rotation in AWS Secrets Manager. |
 | 4 | **DNS caching causes traffic to Azure after cutover** — Some clients (corporate proxies, ISP resolvers) may ignore short TTLs and continue resolving to Azure. | Medium | Medium | Set DNS TTL to 60s at least 48 hours before cutover. Keep Azure App Service running in read-only mode for 72 hours after Phase 5. Return `301 Redirect` from the Azure endpoint as a backstop. Monitor Azure App Service metrics for residual traffic. |
 | 5 | **ECS task startup time causes service instability during scaling events** — .NET cold start + container pull time may exceed ALB health check grace period. | Medium | Medium | Pre-pull the container image by running a minimum of 3 tasks at all times. Set ALB health check grace period to 120 seconds. Use ECS circuit breaker with rollback. Optimize container image size (< 200 MB). Evaluate .NET ReadyToRun compilation for faster startup. |
+| 6 | **Student PII exposure during migration** — The identity database contains student records subject to FERPA. Data in transit between Azure SQL and RDS (via DMS) or temporarily in the DMS replication instance could be exposed if not encrypted. | Low | Critical | Enforce TLS on all DMS endpoints. Place the DMS replication instance in a private subnet with no public IP. Use KMS encryption for the replication instance storage. Restrict DMS IAM permissions to the migration operator role only. Validate that no PII is written to DMS logs (set `EnableLogging` to task-level only, not row-level). Document the migration in the FERPA data processing inventory. |
 
 ---
 
@@ -335,6 +338,14 @@ The migration is considered **complete and successful** when ALL of the followin
 - [ ] Runbook published and reviewed by the on-call team
 - [ ] X-Ray tracing active and traces visible for end-to-end auth flows
 
+### Compliance (FERPA)
+- [ ] All data encrypted at rest (RDS via KMS, ECS ephemeral storage via Fargate platform encryption)
+- [ ] All data encrypted in transit (TLS 1.2+ on ALB, VPN, DMS endpoints, RDS connections)
+- [ ] VPC Flow Logs and RDS audit logging enabled and shipping to CloudWatch/S3
+- [ ] CloudTrail logging active for all AWS API calls in the account
+- [ ] No student PII present in application logs (log sanitization verified)
+- [ ] Access to RDS and Secrets Manager restricted to identity-server task roles only (IAM audit)
+
 ### Decommission Readiness
 - [ ] Azure App Service stopped (not deleted — retained for 30 days as final rollback option)
 - [ ] Azure SQL Database set to read-only (retained for 30 days, then decommissioned)
@@ -349,6 +360,6 @@ The migration is considered **complete and successful** when ALL of the followin
 2. The existing StrongMind AWS VPC has available CIDR space for new subnets.
 3. DNS for the Identity Server endpoint is managed in Route 53 (or can be delegated to Route 53).
 4. The organization has an existing AWS-to-Azure VPN or is willing to establish one.
-5. FERPA compliance requirements are met by encrypting data at rest (KMS) and in transit (TLS 1.2+), with audit logging enabled.
+5. FERPA compliance applies. Requirements addressed: encryption at rest (KMS), encryption in transit (TLS 1.2+), PII redaction in logs, access audit trails (CloudTrail, VPC Flow Logs, RDS audit), and long-term log retention.
 6. The Identity Server does not use WebSockets or SignalR — it serves stateless REST API requests.
 7. The development team can access the .NET source code to build a Docker image and make minor configuration changes (e.g., environment variable-based config).

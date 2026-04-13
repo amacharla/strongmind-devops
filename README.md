@@ -55,7 +55,7 @@ These assumptions are documented throughout each deliverable. Consolidated here 
 | 1 | Identity Server has no Azure-specific SDK dependencies beyond Key Vault and AD DS | Standard .NET 6 apps can be containerized with minimal changes |
 | 2 | DNS for the Identity Server is managed in Route 53 (or can be delegated) | Required for weighted routing cutover strategy |
 | 3 | An AWS-to-Azure VPN exists or can be established | Needed for Azure AD DS directory lookups during transition |
-| 4 | FERPA compliance applies (education platform) | Drives encryption-at-rest, audit logging, and data retention decisions |
+| 4 | FERPA compliance applies (K-12 education platform) | Drives encryption at rest/in transit, PII log redaction, audit logging (CloudTrail + VPC Flow Logs), and data retention policies |
 | 5 | The Identity Server serves stateless REST APIs (no WebSocket/SignalR) | Simplifies ALB configuration and horizontal scaling |
 | 6 | Existing AWS VPC has available CIDR space for new subnets | Standard for an org already running production on AWS |
 | 7 | The .NET source code is accessible for containerization | Required to build Docker image and adjust config to env vars |
