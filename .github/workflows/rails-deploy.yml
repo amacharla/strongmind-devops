@@ -16,10 +16,6 @@ on:
           - production
           - staging
 
-concurrency:
-  group: deploy-${{ github.event.inputs.environment || 'production' }}
-  cancel-in-progress: false
-
 permissions:
   id-token: write
   contents: read
@@ -171,6 +167,9 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-${{ github.event.inputs.environment || 'production' }}
+      cancel-in-progress: false
     environment:
       name: ${{ github.event.inputs.environment || 'production' }}
 
