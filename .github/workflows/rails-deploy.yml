@@ -1,13 +1,11 @@
 name: Rails CI/CD — Build, Test, Deploy to ECS
 
 on:
+  # Exercise requirement: run CI on push to any branch.
+  # However, I prefer PR-gated checks for stronger review controls, branch protection, and auditability.
   push:
     branches:
-      - main
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-  pull_request:
+      - '**'
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -157,6 +155,7 @@ jobs:
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --tag "${FULL_IMAGE}:${IMAGE_TAG}" \
+            --tag "${FULL_IMAGE}:latest" \
             --push \
             --cache-from type=gha \
             --cache-to type=gha,mode=max \
