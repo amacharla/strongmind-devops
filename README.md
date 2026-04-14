@@ -18,10 +18,19 @@ This repository contains deliverables for the StrongMind Staff DevOps Engineer t
 ├── ADR.md                                 ← Part 1: Identity Server Migration ADR (35 pts)
 ├── .github/workflows/rails-deploy.yml     ← Part 2: GitHub Actions CI/CD Pipeline (35 pts)
 ├── Dockerfile                             ← Part 3: Multi-stage Rails Dockerfile (15 pts)
+├── .dockerignore                          ← Bonus: keeps Docker context lean and avoids accidental secret/file inclusion
 ├── OBSERVABILITY.md                       ← Part 4: Observability Design Plan (15 pts)
 ├── Makefile                               ← Local Docker / Postgres / test shortcuts (`make help`)
 └── StrongMind_DevOps_Exercise.pdf         ← Exercise prompt (reference)
 ```
+
+## Bonus Files
+
+In addition to the required deliverables, this repo includes a few practical bonus files used to improve safety, repeatability, and reviewability:
+
+- **`AGENTS.md`** — Fast onboarding context for AI coding agents (scope, assumptions, file routing, and safe-edit rules). Helps Engineers and PM Agents with context.
+- **`Makefile`** — Simple, documented local command shortcuts for Docker build/run, optional local Postgres, and workflow linting to reduce command drift and improve repeatability.
+- **`.dockerignore`** — Excludes unnecessary files from Docker build context to speed builds, reduce image bloat risk, and prevent accidental inclusion of local artifacts or sensitive files.
 
 ## Approach
 
