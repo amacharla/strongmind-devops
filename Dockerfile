@@ -68,12 +68,10 @@ ENV RAILS_ENV=production \
     PORT=3000
 
 # Copy gems from builder
-COPY --from=builder /usr/local/bundle /usr/local/bundle
+COPY --from=builder --chown=rails:rails /usr/local/bundle /usr/local/bundle
 
 # Copy application code and precompiled assets
-COPY --from=builder /app /app
-
-RUN chown -R rails:rails /app
+COPY --from=builder --chown=rails:rails /app /app
 
 USER rails
 
@@ -86,4 +84,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
 
 # db:prepare handles both db:create (if needed) and db:migrate, making the
 # entrypoint safe for first deploy and subsequent deploys alike.
-CMD ["sh", "-c", "bin/rails db:prepare && bin/rails server -b 0.0.0.0 -p ${PORT}"]
+CMD ["sh", "-c", "bin/rails db:prepare && exec bin/rails server -b 0.0.0.0 -p ${PORT}"]

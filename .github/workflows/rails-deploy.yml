@@ -4,7 +4,13 @@ on:
   push:
     branches:
       - main
-      - '**'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
   workflow_dispatch:
     inputs:
       environment:
@@ -16,16 +22,12 @@ on:
           - production
           - staging
 
-permissions:
-  id-token: write
-  contents: read
-
 env:
   AWS_REGION: us-east-1
   ECS_CLUSTER: strongmind-production
   ECS_SERVICE: rails-app
   TASK_DEFINITION_FAMILY: rails-app
-  RUBY_VERSION: '3.3'
+  RUBY_VERSION: '3.3.7'
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -34,6 +36,8 @@ jobs:
   test:
     name: Test & Security Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     services:
       postgres:
         image: postgres:16
@@ -106,6 +110,9 @@ jobs:
     name: Build Docker Image
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     outputs:
       image_uri: ${{ steps.push.outputs.image_uri }}
 
@@ -150,7 +157,6 @@ jobs:
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --tag "${FULL_IMAGE}:${IMAGE_TAG}" \
-            --tag "${FULL_IMAGE}:latest" \
             --push \
             --cache-from type=gha \
             --cache-to type=gha,mode=max \
@@ -167,6 +173,9 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     concurrency:
       group: deploy-${{ github.event.inputs.environment || 'production' }}
       cancel-in-progress: false
@@ -265,6 +274,8 @@ jobs:
 
       - name: Rollback on failure
         if: steps.wait-stable.outcome == 'failure'
+        timeout-minutes: 12
+        continue-on-error: true
         env:
           PREVIOUS_REVISION: ${{ steps.current-task-def.outputs.current_revision }}
         run: |
