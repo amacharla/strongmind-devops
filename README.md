@@ -24,14 +24,6 @@ This repository contains deliverables for the StrongMind Staff DevOps Engineer t
 └── StrongMind_DevOps_Exercise.pdf         ← Exercise prompt (reference)
 ```
 
-## Bonus Files
-
-In addition to the required deliverables, this repo includes a few practical bonus files used to improve safety, repeatability, and reviewability:
-
-- **`AGENTS.md`** — Fast onboarding context for AI coding agents (scope, assumptions, file routing, and safe-edit rules). Helps Engineers and PM Agents with context.
-- **`Makefile`** — Simple, documented local command shortcuts for Docker build/run, optional local Postgres, and workflow linting to reduce command drift and improve repeatability.
-- **`.dockerignore`** — Excludes unnecessary files from Docker build context to speed builds, reduce image bloat risk, and prevent accidental inclusion of local artifacts or sensitive files.
-
 ## Approach
 
 ### Part 1: ADR — Identity Server Migration
@@ -84,3 +76,11 @@ These assumptions are documented throughout each deliverable. Consolidated here 
 - **Disaster recovery:** Cross-region RDS read replica and Route 53 failover routing for the Identity Server.
 - **Cost analysis:** Detailed AWS cost comparison vs. current Azure spend to validate the consolidation business case.
 - **Azure AD DS replacement:** Detailed evaluation of AWS Managed Microsoft AD vs. AWS IAM Identity Center as a follow-up workstream to fully eliminate Azure dependency.
+
+## Bonus Files
+
+In addition to the required deliverables, this repo includes a few practical bonus files used to improve safety, repeatability, and reviewability:
+
+- **`AGENTS.md`** — Fast onboarding context for AI coding agents (scope, assumptions, file routing, and safe-edit rules). Helps Engineers and PM Agents with context.
+- **`Makefile`** — Simple, documented local command shortcuts for Docker build/run, optional local Postgres, and workflow linting to reduce command drift and improve repeatability.
+- **`.dockerignore`** — Excludes unnecessary files from Docker build context to speed builds, reduce image bloat risk, and prevent accidental inclusion of local artifacts or sensitive files.
